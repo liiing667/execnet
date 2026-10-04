@@ -55,9 +55,69 @@ def bootstrap_exec(io: IO, spec: XSpec) -> None:
             raise HostNotFound(io.remoteaddress) from None
 
 
-def bootstrap_socket(io: IO, id) -> None:
-    # XXX: switch to spec
+def _socket_python_error(spec: XSpec, io: IO, detail: str = "") -> OSError:
+    remoteaddress = getattr(io, "remoteaddress", None) or spec.socket
+    message = f"cannot start remote python {spec.python!r} at {remoteaddress}"
+    if detail:
+        message += f": {detail}"
+    return OSError(message)
+
+
+def bootstrap_socket(io: IO, spec: XSpec) -> None:
     from execnet.gateway_socket import SocketIO
+
+    if spec.python:
+        from execnet.gateway_io import popen_args
+
+        child_source = "\n".join(
+            [
+                inspect.getsource(gateway_base),
+                "import sys",
+                inspect.getsource(SocketIO),
+                "execmodel = get_execmodel(%r)" % spec.execmodel,
+                "io = SocketIO(execmodel.socket.socket(fileno=int(sys.argv[1])), execmodel)",
+                "io.write('1'.encode('ascii'))",
+                "serve(io, id='%s-worker')" % spec.id,
+            ]
+        )
+        spawn_source = "\n".join(
+            [
+                "subprocess = execmodel.subprocess",
+                "args = %r" % popen_args(spec),
+                "fd = clientsock.fileno()",
+                "try:",
+                "    process = subprocess.Popen(",
+                "        args + [str(fd)],",
+                "        stdin=subprocess.PIPE,",
+                "        pass_fds=(fd,),",
+                "    )",
+                "    process.stdin.write(%r)"
+                % ((repr(child_source) + "\n").encode("utf-8")),
+                "    process.stdin.flush()",
+                "    process.stdin.close()",
+                "except OSError as exc:",
+                "    clientsock.sendall(b'\\x00' + str(exc).encode('utf-8', 'replace') + b'\\n')",
+                "    raise",
+                "process.wait()",
+            ]
+        )
+        sendexec(io, spawn_source)
+        try:
+            status = io.read(1)
+        except EOFError as exc:
+            raise _socket_python_error(spec, io) from exc
+        if status == b"\x00":
+            detail = b""
+            while not detail.endswith(b"\n"):
+                try:
+                    chunk = io.read(1)
+                except EOFError:
+                    break
+                detail += chunk
+            raise _socket_python_error(spec, io, detail.decode("utf-8", "replace").strip())
+        if status != b"1":
+            raise _socket_python_error(spec, io, f"unexpected handshake {status!r}")
+        return
 
     sendexec(
         io,
@@ -69,7 +129,7 @@ def bootstrap_socket(io: IO, id) -> None:
         "   execmodel = get_execmodel('thread')",
         "io = SocketIO(clientsock, execmodel)",
         "io.write('1'.encode('ascii'))",
-        "serve(io, id='%s-worker')" % id,
+        "serve(io, id='%s-worker')" % spec.id,
     )
     s = io.read(1)
     assert s == b"1"
