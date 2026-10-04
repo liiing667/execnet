@@ -64,6 +64,10 @@ Examples for valid gateway specifications
 * ``socket=192.168.1.4:8888`` specifies a Python Socket server
   process that listens on ``192.168.1.4:8888``
 
+* ``socket=192.168.1.4:8888//python=/path/to/python`` connects to a
+  Python Socket server and lets it spawn the given interpreter, on which
+  the gateway runs.  This also works through ``installvia``.
+
 .. versionadded:: 1.5
 
 * ``vagarant_ssh`` opens a python interpreter via the vagarant ssh command

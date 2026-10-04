@@ -9,7 +9,9 @@ import pathlib
 import shutil
 import signal
 import sys
+import threading
 from collections.abc import Callable
+from collections.abc import Iterator
 from textwrap import dedent
 
 import pytest
@@ -376,6 +378,61 @@ class TestPopenGateway:
 def test_socket_gw_host_not_found(makegateway: Callable[[str], Gateway]) -> None:
     with pytest.raises(execnet.HostNotFound):
         makegateway("socket=qwepoipqwe:9000")
+
+
+@pytest.fixture
+def socketserver_address() -> Iterator[str]:
+    from execnet.gateway_base import get_execmodel
+    from execnet.script import socketserver
+
+    execmodel = get_execmodel("thread")
+    serversock = socketserver.bind_and_listen(("localhost", 0), execmodel)
+    socketserver.execmodel = execmodel
+    host, port = serversock.getsockname()[:2]
+    thread = threading.Thread(target=socketserver.startserver, args=(serversock,))
+    thread.daemon = True
+    thread.start()
+    # the server thread exits by itself once the gateway (and with it the
+    # spawned interpreter) is gone
+    yield f"{host}:{port}"
+
+
+class TestSocketPython:
+    def test_socket_python(
+        self, makegateway: Callable[[str], Gateway], socketserver_address: str
+    ) -> None:
+        gw = makegateway(
+            f"socket={socketserver_address}//python={sys.executable}//id=sockpy"
+        )
+        channel = gw.remote_exec("import sys\nchannel.send(sys.executable)")
+        assert channel.receive() == sys.executable
+
+    def test_socket_python_bad_executable(
+        self, makegateway: Callable[[str], Gateway], socketserver_address: str
+    ) -> None:
+        with pytest.raises(OSError) as excinfo:
+            makegateway(
+                f"socket={socketserver_address}//python=/notexisting/python//id=sockpy"
+            )
+        msg = str(excinfo.value)
+        assert "/notexisting/python" in msg
+        assert socketserver_address in msg
+
+    def test_socket_python_installvia(
+        self, makegateway: Callable[[str], Gateway]
+    ) -> None:
+        makegateway("popen//id=p1")
+        gw = makegateway(f"socket//installvia=p1//id=s1//python={sys.executable}")
+        channel = gw.remote_exec("import sys\nchannel.send(sys.executable)")
+        assert channel.receive() == sys.executable
+
+    def test_socket_python_installvia_bad_executable(
+        self, makegateway: Callable[[str], Gateway]
+    ) -> None:
+        makegateway("popen//id=p1")
+        with pytest.raises(OSError) as excinfo:
+            makegateway("socket//installvia=p1//id=s1//python=/notexisting/python")
+        assert "/notexisting/python" in str(excinfo.value)
 
 
 class TestSshPopenGateway:

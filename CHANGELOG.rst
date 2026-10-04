@@ -3,6 +3,12 @@
 
 * `#380 <https://github.com/pytest-dev/execnet/pull/380>`__: Add support for Python 3.13 and 3.14, and drop EOL 3.8 and 3.9.
 
+* ``socket`` gateways now honor the ``python=`` XSpec option (also through
+  ``installvia``): the remote socket server spawns the given interpreter,
+  which serves the gateway on the accepted connection.  Failure to start the
+  interpreter raises an ``OSError`` mentioning the interpreter path and the
+  remote ``host:port``.
+
 2.1.2 (2025-11-11)
 ------------------
 

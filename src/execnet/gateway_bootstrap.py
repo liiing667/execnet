@@ -55,9 +55,79 @@ def bootstrap_exec(io: IO, spec: XSpec) -> None:
             raise HostNotFound(io.remoteaddress) from None
 
 
-def bootstrap_socket(io: IO, id) -> None:
-    # XXX: switch to spec
+def bootstrap_socket(io: IO, spec: XSpec) -> None:
     from execnet.gateway_socket import SocketIO
+
+    if spec.python:
+        from execnet.gateway_io import popen_args
+
+        child_source = "\n".join(
+            [
+                inspect.getsource(gateway_base),
+                "import socket, sys",
+                inspect.getsource(SocketIO),
+                "execmodel = get_execmodel(%r)" % spec.execmodel,
+                "io = SocketIO(socket.socket(fileno=int(sys.argv[1])), execmodel)",
+                "io.write('1'.encode('ascii'))",
+                "serve(io, id='%s-worker')" % spec.id,
+            ]
+        )
+        # Executed by the socketserver, where ``clientsock`` is the
+        # accepted connection.  It spawns the requested interpreter,
+        # hands it the connection fd (pass_fds keeps the fd number stable
+        # in the child) together with the real bootstrap source, and waits
+        # for it.  The child serves the gateway directly on the inherited
+        # socket, so no data is pumped through the socketserver.
+        errline = (
+            "    msg = 'cannot start remote python %%r at %%s:%%s: %%s'"
+            " %% (%r, host, port, e)" % (spec.python,)
+        )
+        spawn_source = "\n".join(
+            [
+                "subprocess = execmodel.subprocess",
+                "fd = clientsock.fileno()",
+                "try:",
+                "    p = subprocess.Popen(",
+                "        %r + [str(fd)]," % (popen_args(spec),),
+                "        stdin=subprocess.PIPE,",
+                "        pass_fds=(fd,),",
+                "    )",
+                "except OSError as e:",
+                "    host, port = clientsock.getsockname()[:2]",
+                errline,
+                "    clientsock.sendall(b'\\x00' + msg.encode('utf-8') + b'\\n')",
+                "    raise",
+                "p.stdin.write(%r)" % ((repr(child_source) + "\n").encode("utf-8"),),
+                "p.stdin.flush()",
+                "p.stdin.close()",
+                "p.wait()",
+            ]
+        )
+        sendexec(io, spawn_source)
+        try:
+            s = io.read(1)
+        except EOFError:
+            s = b""
+        if s == b"\x00":
+            # the remote side could not spawn the requested interpreter
+            # and sent us an error message line
+            msg = b""
+            while not msg.endswith(b"\n"):
+                try:
+                    chunk = io.read(1)
+                except EOFError:
+                    break
+                if not chunk:
+                    break
+                msg += chunk
+            raise OSError(msg.decode("utf-8", "replace").rstrip())
+        if s != b"1":
+            remoteaddress = getattr(io, "remoteaddress", None) or spec.socket
+            raise OSError(
+                "remote python %r at %s failed to start"
+                % (spec.python, remoteaddress)
+            )
+        return
 
     sendexec(
         io,
@@ -69,7 +139,7 @@ def bootstrap_socket(io: IO, id) -> None:
         "   execmodel = get_execmodel('thread')",
         "io = SocketIO(clientsock, execmodel)",
         "io.write('1'.encode('ascii'))",
-        "serve(io, id='%s-worker')" % id,
+        "serve(io, id='%s-worker')" % spec,
     )
     s = io.read(1)
     assert s == b"1"

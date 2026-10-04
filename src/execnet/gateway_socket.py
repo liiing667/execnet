@@ -83,7 +83,6 @@ def start_via(
 
 def create_io(spec: XSpec, group: Group, execmodel: ExecModel) -> SocketIO:
     assert spec.socket is not None
-    assert not spec.python, "socket: specifying python executables not yet supported"
     gateway_id = spec.installvia
     if gateway_id:
         host, port = start_via(group[gateway_id])
